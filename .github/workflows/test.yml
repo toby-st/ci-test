@@ -35,7 +35,27 @@ jobs:
                   echo ">>> POST https://api.fake-registrar.com/domains/example.com/ds"
                   echo ">>> Body: ${{ steps.keygen.outputs.ds-record }}"
                   echo ">>> Response: 201 Created"
+            - name: Write deployment summary
+              run: |
+                  KEY=${{ steps.keygen.outputs.key-tag }}
+                  DS=${{ steps.keygen.outputs.ds-record }}
+                  cat >> $GITHUB_STEP_SUMMARY << EOF
+                  ## KSK Rollover Summary
 
+                  | Field | Value |
+                  |-------|-------|
+                  | Key tag | \`${KEY}\` |
+                  | Algorithm | ECDSAP256SHA256 |
+                  | Publish time | $(date -u +"%Y-%m-%d %H:%M UTC") |
+                  | Status | Pre-published, not yet active |
+
+                  ### DS record to be added at registrar
+                  \`\`\`
+                  ${DS}
+                  \`\`\`
+
+                  **Approve to activate signing with the new KSK.**
+                  EOF
             - name: Upload keys as artifact
               uses: actions/upload-artifact@v4
               with:
@@ -58,6 +78,11 @@ jobs:
         runs-on: ubuntu-latest
 
         steps:
+            - name: Install BIND tools
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y bind9utils
+
             - name: Download keys
               uses: actions/download-artifact@v4
               with:

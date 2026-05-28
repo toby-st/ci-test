@@ -23,22 +23,22 @@ jobs:
                   KEY=$(dnssec-keygen -a ECDSAP256SHA256 -f KSK -P now -A none \
                     -K /tmp/keys -n ZONE example.com)
                   echo "Generated key: $KEY"
-
                   DS=$(dnssec-dsfromkey /tmp/keys/${KEY}.key | head -1)
                   echo "DS record: $DS"
-
                   echo "key-tag=${KEY}" >> $GITHUB_OUTPUT
                   echo "ds-record=${DS}" >> $GITHUB_OUTPUT
 
             - name: Simulate registrar API call (add DS)
               run: |
+                  DS="${{ steps.keygen.outputs.ds-record }}"
                   echo ">>> POST https://api.fake-registrar.com/domains/example.com/ds"
-                  echo ">>> Body: ${{ steps.keygen.outputs.ds-record }}"
+                  echo ">>> Body: ${DS}"
                   echo ">>> Response: 201 Created"
+
             - name: Write deployment summary
               run: |
-                  KEY=${{ steps.keygen.outputs.key-tag }}
-                  DS=${{ steps.keygen.outputs.ds-record }}
+                  KEY="${{ steps.keygen.outputs.key-tag }}"
+                  DS="${{ steps.keygen.outputs.ds-record }}"
                   cat >> $GITHUB_STEP_SUMMARY << EOF
                   ## KSK Rollover Summary
 
@@ -56,6 +56,7 @@ jobs:
 
                   **Approve to activate signing with the new KSK.**
                   EOF
+
             - name: Upload keys as artifact
               uses: actions/upload-artifact@v4
               with:
@@ -68,9 +69,12 @@ jobs:
         environment: ksk-approval
 
         steps:
-            - run: |
-                  echo "Key tag: ${{ needs.generate-ksk.outputs.key-tag }}"
-                  echo "DS record: ${{ needs.generate-ksk.outputs.ds-record }}"
+            - name: Show pending key info
+              run: |
+                  KEY="${{ needs.generate-ksk.outputs.key-tag }}"
+                  DS="${{ needs.generate-ksk.outputs.ds-record }}"
+                  echo "Key tag: ${KEY}"
+                  echo "DS record: ${DS}"
                   echo "Waiting for manual approval..."
 
     activate-ksk:
@@ -91,12 +95,28 @@ jobs:
 
             - name: Activate KSK
               run: |
-                  KEY=${{ needs.generate-ksk.outputs.key-tag }}
+                  KEY="${{ needs.generate-ksk.outputs.key-tag }}"
                   dnssec-settime -A now /tmp/keys/${KEY}.private
                   echo ">>> rndc loadkeys example.com (simulated)"
 
             - name: Verify activation time
               run: |
-                  KEY=${{ needs.generate-ksk.outputs.key-tag }}
+                  KEY="${{ needs.generate-ksk.outputs.key-tag }}"
                   echo "Key metadata after activation:"
                   dnssec-settime -p all /tmp/keys/${KEY}.private
+
+            - name: Write activation summary
+              run: |
+                  KEY="${{ needs.generate-ksk.outputs.key-tag }}"
+                  DS="${{ needs.generate-ksk.outputs.ds-record }}"
+                  cat >> $GITHUB_STEP_SUMMARY << EOF
+                  ## KSK Activation Complete
+
+                  | Field | Value |
+                  |-------|-------|
+                  | Key tag | \`${KEY}\` |
+                  | Activated at | $(date -u +"%Y-%m-%d %H:%M UTC") |
+                  | DS record | \`${DS}\` |
+
+                  Next step: monitor zone signing and remove old KSK after DS TTL expires.
+                  EOF

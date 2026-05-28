@@ -1,47 +1,75 @@
-name: KSK Rollover
+name: KSK Rollover (Test)
 
 on:
-    workflow_dispatch: # trigger manually
+    workflow_dispatch:
 
 jobs:
     generate-ksk:
         runs-on: ubuntu-latest
         outputs:
             key-tag: ${{ steps.keygen.outputs.key-tag }}
+            ds-record: ${{ steps.keygen.outputs.ds-record }}
 
         steps:
-            - name: Generate new KSK on BIND server
+            - name: Install BIND tools
+              run: sudo apt-get install -y bind9utils dnsutils
+
+            - name: Generate KSK
               id: keygen
               run: |
-                  KEY=$(ssh -i ${{ secrets.BIND_SSH_KEY }} user@bind-server \
-                    "dnssec-keygen -a ECDSAP256SHA256 -f KSK -P now -A none \
-                     -K /etc/bind/keys/example.com -n ZONE example.com")
-                  echo "key-tag=${KEY}" >> $GITHUB_OUTPUT
+                  mkdir -p /tmp/keys
+                  KEY=$(dnssec-keygen -a ECDSAP256SHA256 -f KSK -P now -A none \
+                    -K /tmp/keys -n ZONE example.com)
+                  echo "Generated key: $KEY"
 
-            - name: Add new DS record to registrar
+                  DS=$(dnssec-dsfromkey /tmp/keys/${KEY}.key | head -1)
+                  echo "DS record: $DS"
+
+                  echo "key-tag=${KEY}" >> $GITHUB_OUTPUT
+                  echo "ds-record=${DS}" >> $GITHUB_OUTPUT
+
+            - name: Simulate registrar API call (add DS)
               run: |
-                  DS=$(ssh -i ${{ secrets.BIND_SSH_KEY }} user@bind-server \
-                    "dnssec-dsfromkey /etc/bind/keys/example.com/${{ steps.keygen.outputs.key-tag }}.key")
-                  curl -X POST https://api.registrar.com/domains/example.com/ds \
-                    -H "Authorization: Bearer ${{ secrets.REGISTRAR_API_KEY }}" \
-                    -d "$DS"
+                  echo ">>> POST https://api.fake-registrar.com/domains/example.com/ds"
+                  echo ">>> Body: ${{ steps.keygen.outputs.ds-record }}"
+                  echo ">>> Response: 201 Created"
+
+            - name: Upload keys as artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ksk-keys
+                  path: /tmp/keys/
 
     wait-for-approval:
         needs: generate-ksk
         runs-on: ubuntu-latest
-        environment: ksk-approval # <-- this is the manual gate
+        environment: ksk-approval
 
         steps:
-            - run: echo "Approved — activating ${{ needs.generate-ksk.outputs.key-tag }}"
+            - run: |
+                  echo "Key tag: ${{ needs.generate-ksk.outputs.key-tag }}"
+                  echo "DS record: ${{ needs.generate-ksk.outputs.ds-record }}"
+                  echo "Waiting for manual approval..."
 
     activate-ksk:
         needs: [generate-ksk, wait-for-approval]
         runs-on: ubuntu-latest
 
         steps:
-            - name: Activate new KSK
+            - name: Download keys
+              uses: actions/download-artifact@v4
+              with:
+                  name: ksk-keys
+                  path: /tmp/keys/
+
+            - name: Activate KSK
               run: |
-                  ssh -i ${{ secrets.BIND_SSH_KEY }} user@bind-server \
-                    "dnssec-settime -A now \
-                     /etc/bind/keys/example.com/${{ needs.generate-ksk.outputs.key-tag }}.private \
-                     && rndc loadkeys example.com"
+                  KEY=${{ needs.generate-ksk.outputs.key-tag }}
+                  dnssec-settime -A now /tmp/keys/${KEY}.private
+                  echo ">>> rndc loadkeys example.com (simulated)"
+
+            - name: Verify activation time
+              run: |
+                  KEY=${{ needs.generate-ksk.outputs.key-tag }}
+                  echo "Key metadata after activation:"
+                  dnssec-settime -p all /tmp/keys/${KEY}.private

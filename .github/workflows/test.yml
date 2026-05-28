@@ -1,0 +1,47 @@
+name: KSK Rollover
+
+on:
+    workflow_dispatch: # trigger manually
+
+jobs:
+    generate-ksk:
+        runs-on: ubuntu-latest
+        outputs:
+            key-tag: ${{ steps.keygen.outputs.key-tag }}
+
+        steps:
+            - name: Generate new KSK on BIND server
+              id: keygen
+              run: |
+                  KEY=$(ssh -i ${{ secrets.BIND_SSH_KEY }} user@bind-server \
+                    "dnssec-keygen -a ECDSAP256SHA256 -f KSK -P now -A none \
+                     -K /etc/bind/keys/example.com -n ZONE example.com")
+                  echo "key-tag=${KEY}" >> $GITHUB_OUTPUT
+
+            - name: Add new DS record to registrar
+              run: |
+                  DS=$(ssh -i ${{ secrets.BIND_SSH_KEY }} user@bind-server \
+                    "dnssec-dsfromkey /etc/bind/keys/example.com/${{ steps.keygen.outputs.key-tag }}.key")
+                  curl -X POST https://api.registrar.com/domains/example.com/ds \
+                    -H "Authorization: Bearer ${{ secrets.REGISTRAR_API_KEY }}" \
+                    -d "$DS"
+
+    wait-for-approval:
+        needs: generate-ksk
+        runs-on: ubuntu-latest
+        environment: ksk-approval # <-- this is the manual gate
+
+        steps:
+            - run: echo "Approved — activating ${{ needs.generate-ksk.outputs.key-tag }}"
+
+    activate-ksk:
+        needs: [generate-ksk, wait-for-approval]
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Activate new KSK
+              run: |
+                  ssh -i ${{ secrets.BIND_SSH_KEY }} user@bind-server \
+                    "dnssec-settime -A now \
+                     /etc/bind/keys/example.com/${{ needs.generate-ksk.outputs.key-tag }}.private \
+                     && rndc loadkeys example.com"

@@ -12,7 +12,9 @@ jobs:
 
         steps:
             - name: Install BIND tools
-              run: sudo apt-get install -y bind9utils dnsutils
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y bind9utils dnsutils
 
             - name: Generate KSK
               id: keygen
